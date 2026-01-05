@@ -1,3 +1,4 @@
+// models/User.js
 const mongoose = require('mongoose');
 const bcrypt = require('bcryptjs');
 
@@ -18,7 +19,16 @@ const userSchema = new mongoose.Schema({
         lowercase: true,
         match: [/^\S+@\S+\.\S+$/, 'Please enter a valid email']
     },
-    
+     username: {
+        type: String,
+        required: [true, 'Please enter a username'],
+        unique: true,
+        trim: true,
+        lowercase: true,
+        minlength: [3, 'Username must be at least 3 characters'],
+        maxlength: [30, 'Username cannot exceed 30 characters'],
+        match: [/^[a-zA-Z0-9_]+$/, 'Username can only contain letters, numbers, and underscores']
+    },
     password: {
         type: String,
         required: [true, 'Please enter a password'],

@@ -1,36 +1,47 @@
+// controllers/authController.js
 const User = require('../models/User');
 const emailService = require('../utils/emailService');
 
 // Register new user
 exports.register = async (req, res) => {
     try {
-        const { fullName, email, password, userType } = req.body;
+        const { fullName, email, password, userType, username } = req.body;
         
-        // 1. Check required fields
-        if (!fullName || !email || !password || !userType) {
+        // 1. Check ALL required fields (including username)
+        if (!fullName || !email || !password || !userType || !username) {
             return res.status(400).json({
                 success: false,
-                message: 'Please provide all required fields'
+                message: 'Please provide all required fields: fullName, email, password, userType, username'
             });
         }
         
-        // 2. Check if user already exists
-        const existingUser = await User.findOne({ email });
-        if (existingUser) {
+        // 2. Check if email already exists
+        const existingEmail = await User.findOne({ email });
+        if (existingEmail) {
             return res.status(400).json({
                 success: false,
                 message: 'User already exists with this email'
             });
         }
         
-        // 3. Generate verification code
-        const verificationCode = Math.floor(100000 + Math.random() * 900000).toString(); // 6-digit code
+        // 3. NEW: Check if username already exists
+        const existingUsername = await User.findOne({ username: username.toLowerCase() });
+        if (existingUsername) {
+            return res.status(400).json({
+                success: false,
+                message: 'Username already taken'
+            });
+        }
+        
+        // 4. Generate verification code
+        const verificationCode = Math.floor(100000 + Math.random() * 900000).toString();
         const codeExpires = new Date(Date.now() + 10 * 60 * 1000); // 10 minutes from now
 
-        // 4. Create new user with verification code
+        // 5. Create new user with verification code
         const user = await User.create({
             fullName,
             email,
+            username: username.toLowerCase(), // Store lowercase
             password,
             userType,
             verificationCode,
@@ -38,10 +49,10 @@ exports.register = async (req, res) => {
             isVerified: false
         });
 
-        // 5. Send verification email
+        // 6. Send verification email
         await emailService.sendVerificationEmail(email, verificationCode);
         
-        // 6. Return success
+        // 7. Return success
         res.status(201).json({
             success: true,
             message: 'Registration successful! Verification code sent to your email.',
@@ -49,6 +60,7 @@ exports.register = async (req, res) => {
             data: {
                 id: user._id,
                 fullName: user.fullName,
+                username: user.username,
                 email: user.email,
                 userType: user.userType,
                 isVerified: user.isVerified,
@@ -96,7 +108,7 @@ exports.login = async (req, res) => {
             });
         }
 
-        // 4. Check if user is verified (NEW)
+        // 4. Check if user is verified
         if (!user.isVerified) {
             return res.status(403).json({
                 success: false,
@@ -118,13 +130,14 @@ exports.login = async (req, res) => {
         // 6. Remove password from response
         user.password = undefined;
         
-        // 7. Return success
+        // 7. Return success WITH username
         res.status(200).json({
             success: true,
             message: 'Login successful',
             data: {
                 id: user._id,
                 fullName: user.fullName,
+                username: user.username,
                 email: user.email,
                 userType: user.userType,
                 isActive: user.isActive,
@@ -142,7 +155,6 @@ exports.login = async (req, res) => {
     }
 };
 
-// Verify email with code
 // Verify email with code
 exports.verifyEmail = async (req, res) => {
     try {
@@ -186,6 +198,7 @@ exports.verifyEmail = async (req, res) => {
                 data: {
                     id: user._id,
                     fullName: user.fullName,
+                    username: user.username,
                     email: user.email,
                     userType: user.userType,
                     isVerified: true
@@ -235,13 +248,14 @@ exports.verifyEmail = async (req, res) => {
         
         await user.save();
         
-        // 7. Return success
+        // 7. Return success WITH username
         res.status(200).json({
             success: true,
             message: 'Email verified successfully!',
             data: {
                 id: user._id,
                 fullName: user.fullName,
+                username: user.username,
                 email: user.email,
                 userType: user.userType,
                 isVerified: true
@@ -262,7 +276,7 @@ exports.verifyEmail = async (req, res) => {
 exports.resendCode = async (req, res) => {
     try {
         const { email } = req.body;
-        
+         
         if (!email) {
             return res.status(400).json({
                 success: false,
@@ -314,6 +328,7 @@ exports.resendCode = async (req, res) => {
         });
     }
 };
+
 // Get current user profile
 exports.getProfile = async (req, res) => {
     try {
