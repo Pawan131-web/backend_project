@@ -34,8 +34,9 @@ exports.getAllUsers = async (req, res) => {
         // Filter by status
         if (status === 'active') {
             query.isActive = true;
+            query.isBlocked = { $ne: true };
         } else if (status === 'blocked') {
-            query.isActive = false;
+            query.isBlocked = true;
         } else if (status === 'verified') {
             query.isVerified = true;
         } else if (status === 'unverified') {
@@ -48,7 +49,7 @@ exports.getAllUsers = async (req, res) => {
 
         // Get users with pagination
         const users = await User.find(query)
-            .select('fullName username email userType isActive isVerified createdAt')
+            .select('fullName username email userType isActive isBlocked blockReason isVerified createdAt')
             .sort({ [sortBy]: sortOrder === 'desc' ? -1 : 1 })
             .skip(skip)
             .limit(limitNum);
@@ -57,18 +58,23 @@ exports.getAllUsers = async (req, res) => {
         const totalUsers = await User.countDocuments(query);
 
         // Format response
-        const formattedUsers = users.map(user => ({
-            id: user._id,
-            fullName: user.fullName,
-            username: user.username,
-            email: user.email,
-            userType: user.userType,
-            isActive: user.isActive,
-            isVerified: user.isVerified,
-            createdAt: user.createdAt,
-            status: user.isActive ? 'active' : 'blocked',
-            verificationStatus: user.isVerified ? 'verified' : 'pending'
-        }));
+        const formattedUsers = users.map(user => {
+            const effectiveIsActive = user.isBlocked ? false : user.isActive;
+            return {
+                id: user._id,
+                fullName: user.fullName,
+                username: user.username,
+                email: user.email,
+                userType: user.userType,
+                isActive: effectiveIsActive,
+                isBlocked: user.isBlocked || false,
+                blockReason: user.blockReason,
+                isVerified: user.isVerified,
+                createdAt: user.createdAt,
+                status: effectiveIsActive ? 'active' : 'blocked',
+                verificationStatus: user.isVerified ? 'verified' : 'pending'
+            };
+        });
 
         res.status(200).json({
             success: true,
@@ -120,7 +126,9 @@ exports.getUserById = async (req, res) => {
                 username: user.username,
                 email: user.email,
                 userType: user.userType,
-                isActive: user.isActive,
+                isActive: user.isBlocked ? false : user.isActive,
+                isBlocked: user.isBlocked || false,
+                blockReason: user.blockReason,
                 isVerified: user.isVerified,
                 createdAt: user.createdAt,
                 ...userStats
@@ -161,23 +169,46 @@ exports.updateUserStatus = async (req, res) => {
         }
 
         let message = '';
-        let updateData = {};
+        let updateOps = {};
 
         switch (action) {
             case 'block':
-                updateData.isActive = false;
+                const blockReason = reason || 'Blocked by admin';
+                updateOps = {
+                    $set: {
+                        isBlocked: true,
+                        blockReason,
+                        blockedAt: new Date(),
+                        blockedBy: req.admin?._id
+                    }
+                };
                 message = `User ${user.fullName} blocked successfully`;
                 break;
 
             case 'unblock':
-                updateData.isActive = true;
+                updateOps = {
+                    $set: {
+                        isBlocked: false
+                    },
+                    $unset: {
+                        blockReason: 1,
+                        blockedAt: 1,
+                        blockedBy: 1
+                    }
+                };
                 message = `User ${user.fullName} unblocked successfully`;
                 break;
 
             case 'verify':
-                updateData.isVerified = true;
-                updateData.verificationCode = undefined;
-                updateData.codeExpires = undefined;
+                updateOps = {
+                    $set: {
+                        isVerified: true
+                    },
+                    $unset: {
+                        verificationCode: 1,
+                        codeExpires: 1
+                    }
+                };
                 message = `User ${user.fullName} verified successfully`;
                 break;
 
@@ -190,7 +221,8 @@ exports.updateUserStatus = async (req, res) => {
         }
 
         // Update user
-        await User.findByIdAndUpdate(id, updateData, { new: true });
+        const updatedUser = await User.findByIdAndUpdate(id, updateOps, { new: true });
+        const effectiveIsActive = updatedUser.isBlocked ? false : updatedUser.isActive;
 
         // Log admin action (you should create an ActivityLog model)
         console.log(`Admin ${req.admin.email} ${action}ed user ${user.email}. Reason: ${reason || 'No reason provided'}`);
@@ -199,12 +231,14 @@ exports.updateUserStatus = async (req, res) => {
             success: true,
             message: message,
             user: {
-                id: user._id,
-                fullName: user.fullName,
-                username: user.username,
-                email: user.email,
-                isActive: action === 'block' ? false : action === 'unblock' ? true : user.isActive,
-                isVerified: action === 'verify' ? true : user.isVerified
+                id: updatedUser._id,
+                fullName: updatedUser.fullName,
+                username: updatedUser.username,
+                email: updatedUser.email,
+                isActive: effectiveIsActive,
+                isBlocked: updatedUser.isBlocked || false,
+                blockReason: updatedUser.blockReason,
+                isVerified: updatedUser.isVerified
             }
         });
 
@@ -238,24 +272,46 @@ exports.bulkUserActions = async (req, res) => {
             });
         }
 
-        let updateData = {};
+        let updateOps = {};
         let message = '';
 
         switch (action) {
             case 'block':
-                updateData.isActive = false;
+                updateOps = {
+                    $set: {
+                        isBlocked: true,
+                        blockReason: reason || 'Blocked by admin',
+                        blockedAt: new Date(),
+                        blockedBy: req.admin?._id
+                    }
+                };
                 message = `${userIds.length} users blocked successfully`;
                 break;
 
             case 'unblock':
-                updateData.isActive = true;
+                updateOps = {
+                    $set: {
+                        isBlocked: false
+                    },
+                    $unset: {
+                        blockReason: 1,
+                        blockedAt: 1,
+                        blockedBy: 1
+                    }
+                };
                 message = `${userIds.length} users unblocked successfully`;
                 break;
 
             case 'verify':
-                updateData.isVerified = true;
-                updateData.verificationCode = undefined;
-                updateData.codeExpires = undefined;
+                updateOps = {
+                    $set: {
+                        isVerified: true
+                    },
+                    $unset: {
+                        verificationCode: 1,
+                        codeExpires: 1
+                    }
+                };
                 message = `${userIds.length} users verified successfully`;
                 break;
 
@@ -270,12 +326,22 @@ exports.bulkUserActions = async (req, res) => {
         // Update multiple users
         await User.updateMany(
             { _id: { $in: userIds } },
-            updateData
+            updateOps
         );
 
         // Get updated users for response
         const updatedUsers = await User.find({ _id: { $in: userIds } })
-            .select('fullName username email userType');
+            .select('fullName username email userType isActive isBlocked blockReason');
+        const formattedUsers = updatedUsers.map(u => ({
+            id: u._id,
+            fullName: u.fullName,
+            username: u.username,
+            email: u.email,
+            userType: u.userType,
+            isActive: u.isBlocked ? false : u.isActive,
+            isBlocked: u.isBlocked || false,
+            blockReason: u.blockReason
+        }));
 
         console.log(`Admin ${req.admin.email} performed bulk ${action} on ${userIds.length} users. Reason: ${reason || 'No reason provided'}`);
 
@@ -283,7 +349,7 @@ exports.bulkUserActions = async (req, res) => {
             success: true,
             message: message,
             count: userIds.length,
-            users: updatedUsers
+            users: formattedUsers
         });
 
     } catch (error) {
@@ -305,8 +371,8 @@ exports.getUserStats = async (req, res) => {
         const totalStudents = await User.countDocuments({ userType: 'student' });
         const totalOrganizations = await User.countDocuments({ userType: 'organization' });
         
-        const activeUsers = await User.countDocuments({ isActive: true });
-        const blockedUsers = await User.countDocuments({ isActive: false });
+        const activeUsers = await User.countDocuments({ isActive: true, isBlocked: { $ne: true } });
+        const blockedUsers = await User.countDocuments({ isBlocked: true });
         
         const verifiedUsers = await User.countDocuments({ isVerified: true });
         const unverifiedUsers = await User.countDocuments({ isVerified: false });

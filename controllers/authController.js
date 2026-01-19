@@ -1,6 +1,36 @@
 // controllers/authController.js
 const User = require('../models/User');
 const emailService = require('../utils/emailService');
+const jwt = require('jsonwebtoken');
+const fs = require('fs');
+const path = require('path');
+
+function sanitizeFilename(filename) {
+    return (filename || 'file')
+        .toString()
+        .replace(/[^a-zA-Z0-9._-]/g, '_')
+        .replace(/_+/g, '_')
+        .substring(0, 120);
+}
+
+function parseDataUrl(dataUrl) {
+    if (!dataUrl || typeof dataUrl !== 'string') return null;
+    const match = dataUrl.match(/^data:([^;]+);base64,(.*)$/);
+    if (!match) return null;
+    return {
+        mime: match[1],
+        buffer: Buffer.from(match[2], 'base64')
+    };
+}
+
+function extensionFromMime(mime) {
+    if (!mime) return '';
+    const m = mime.toLowerCase();
+    if (m === 'application/pdf') return '.pdf';
+    if (m === 'image/jpeg') return '.jpg';
+    if (m === 'image/png') return '.png';
+    return '';
+}
 
 // Register new user
 exports.register = async (req, res) => {
@@ -64,7 +94,8 @@ exports.register = async (req, res) => {
                 email: user.email,
                 userType: user.userType,
                 isVerified: user.isVerified,
-                needsVerification: true
+                needsVerification: true,
+                orgVerificationStatus: user.orgVerificationStatus
             }
         });
         
@@ -129,11 +160,22 @@ exports.login = async (req, res) => {
         
         // 6. Remove password from response
         user.password = undefined;
+
+        // 7. Create JWT token
+        const token = jwt.sign(
+            {
+                id: user._id,
+                userType: user.userType
+            },
+            process.env.JWT_SECRET || 'secret_key',
+            { expiresIn: '7d' }
+        );
         
-        // 7. Return success WITH username
+        // 8. Return success WITH username
         res.status(200).json({
             success: true,
             message: 'Login successful',
+            token,
             data: {
                 id: user._id,
                 fullName: user.fullName,
@@ -141,7 +183,9 @@ exports.login = async (req, res) => {
                 email: user.email,
                 userType: user.userType,
                 isActive: user.isActive,
-                isVerified: user.isVerified
+                isVerified: user.isVerified,
+                orgVerificationStatus: user.orgVerificationStatus,
+                orgRegistrationNumber: user.orgRegistrationNumber
             }
         });
         
@@ -201,7 +245,8 @@ exports.verifyEmail = async (req, res) => {
                     username: user.username,
                     email: user.email,
                     userType: user.userType,
-                    isVerified: true
+                    isVerified: true,
+                    orgVerificationStatus: user.orgVerificationStatus
                 }
             });
         }
@@ -258,7 +303,8 @@ exports.verifyEmail = async (req, res) => {
                 username: user.username,
                 email: user.email,
                 userType: user.userType,
-                isVerified: true
+                isVerified: true,
+                orgVerificationStatus: user.orgVerificationStatus
             }
         });
         
@@ -324,6 +370,101 @@ exports.resendCode = async (req, res) => {
         res.status(500).json({
             success: false,
             message: 'Failed to resend code',
+            error: error.message
+        });
+    }
+};
+
+// Submit organization verification details
+exports.submitOrgVerification = async (req, res) => {
+    try {
+        const { email, registrationNumber, documents } = req.body;
+
+        if (!email || !registrationNumber) {
+            return res.status(400).json({
+                success: false,
+                message: 'Email and registrationNumber are required'
+            });
+        }
+
+        const user = await User.findOne({ email });
+
+        if (!user) {
+            return res.status(404).json({
+                success: false,
+                message: 'User not found'
+            });
+        }
+
+        if (user.userType !== 'organization') {
+            return res.status(400).json({
+                success: false,
+                message: 'Only organization accounts can submit organization verification'
+            });
+        }
+
+        user.orgRegistrationNumber = registrationNumber.trim();
+        user.orgVerificationStatus = 'pending';
+        user.orgVerificationSubmittedAt = new Date();
+        user.orgRejectionReason = undefined;
+
+        if (Array.isArray(documents)) {
+            const baseUploadDir = path.join(__dirname, '..', 'uploads', 'org-verification', String(user._id));
+            fs.mkdirSync(baseUploadDir, { recursive: true });
+
+            user.orgVerificationDocuments = documents.map(doc => {
+                const docFiles = Array.isArray(doc.files)
+                    ? doc.files.slice(0, 3).map((file, idx) => {
+                        const parsed = parseDataUrl(file?.data);
+                        if (!parsed) return null;
+
+                        if (parsed.buffer.length > 5 * 1024 * 1024) return null;
+
+                        const ext = extensionFromMime(parsed.mime) || path.extname(file?.name || '') || '.bin';
+                        const safeOriginal = sanitizeFilename(file?.name || `document-${idx + 1}${ext}`);
+                        const finalName = safeOriginal.toLowerCase().endsWith(ext) ? safeOriginal : `${safeOriginal}${ext}`;
+                        const filename = `${Date.now()}-${Math.random().toString(16).slice(2)}-${finalName}`;
+                        const absolutePath = path.join(baseUploadDir, filename);
+                        fs.writeFileSync(absolutePath, parsed.buffer);
+
+                        return {
+                            name: safeOriginal,
+                            type: parsed.mime || file?.type || '',
+                            size: parsed.buffer.length,
+                            url: `/uploads/org-verification/${user._id}/${filename}`
+                        };
+                    }).filter(Boolean)
+                    : [];
+
+                return {
+                    documentType: doc.documentType || '',
+                    documentUrl: doc.documentUrl || '',
+                    note: doc.note || '',
+                    files: docFiles
+                };
+            });
+        }
+
+        await user.save();
+
+        res.status(200).json({
+            success: true,
+            message: 'Organization verification submitted successfully',
+            data: {
+                id: user._id,
+                fullName: user.fullName,
+                email: user.email,
+                userType: user.userType,
+                orgVerificationStatus: user.orgVerificationStatus,
+                orgRegistrationNumber: user.orgRegistrationNumber
+            }
+        });
+
+    } catch (error) {
+        console.error('Submit organization verification error:', error);
+        res.status(500).json({
+            success: false,
+            message: 'Server error submitting organization verification',
             error: error.message
         });
     }

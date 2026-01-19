@@ -13,6 +13,21 @@ router.get('/search', userController.searchUsers);
 // @access  Public
 router.get('/profile/:username', userController.getUserProfile);
 
+// @route   GET /api/users/me/:userId
+// @desc    Get own full profile for editing
+// @access  Private
+router.get('/me/:userId', userController.getMyProfile);
+
+// @route   PUT /api/users/profile-picture
+// @desc    Update user profile picture and cover photo
+// @access  Private
+router.put('/profile-picture', userController.updateProfilePicture);
+
+// @route   PUT /api/users/profile/:userId
+// @desc    Update full user profile
+// @access  Private
+router.put('/profile/:userId', userController.updateProfile);
+
 // @route   GET /api/users/test
 // @desc    Test user routes
 // @access  Public

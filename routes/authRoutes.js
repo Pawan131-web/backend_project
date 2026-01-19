@@ -18,6 +18,8 @@ router.post('/login', authController.login);
 // @access  Public
 router.post('/verify', authController.verifyEmail);
 
+router.post('/org/verification', authController.submitOrgVerification);
+
 // @route   GET /api/auth/profile
 // @desc    Get user profile
 // @access  Private (will implement later)
